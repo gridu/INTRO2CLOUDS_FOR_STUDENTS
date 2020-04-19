@@ -1,0 +1,187 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "GridU Clouds Intro course"
+Parameters:
+  QueueName:
+    Type: String
+    Description: "SQS queue name"
+  SshKey:
+    Type: String
+    Description: "Name of existing KeyPair for ssh access to ec2 instances"
+  MyIp:
+    Type: String
+    Description: "Subnet mask to allow ssh access to EC2 instance"
+    Default: "89.22.4.3/29"
+  BucketName:
+    Type: String
+    Description: "Name of S3 bucket to create for storing data"
+  CodeBucket:
+    Type: String
+    Description: "Name of pre-created bucket which contains executables(*.jar, *.py, etc.)"
+  PublisherFunctionS3Key:
+    Type: String
+    Description: "Executable file location within CodeBucket"
+  PublisherFunctionRuntime:
+    Type: String
+    Description: "For example, 'java8'"
+  PublisherFunctionHandler:
+    Type: String
+    Description: "Full qualified name of method to run, e.g. for java package.name.ClassName::methodName"
+Resources:
+  Queue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Ref QueueName
+      ReceiveMessageWaitTimeSeconds: 20
+  VirtualMachine:
+    Type: AWS::EC2::Instance
+    Properties:
+      IamInstanceProfile: !Ref VirtualMachineInstanceProfile
+      InstanceType: t2.micro
+      KeyName: !Ref SshKey
+      ImageId: ami-0e38b48473ea57778
+      SecurityGroupIds:
+        - !GetAtt VirtualMachineSecurityGroup.GroupId
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash -xe
+            yum update -y aws-cfn-bootstrap
+            yum install -y java-1.8.0-openjdk-devel
+            /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource VirtualMachine --configsets install --region ${AWS::Region}
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource VirtualMachine --region ${AWS::Region}
+  VirtualMachineInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${AWS::StackName}-vm-instance-profile"
+      Roles:
+        - !Ref VirtualMachineInstanceRole
+  VirtualMachineInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-vm-instance-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: "allow_receive_messages"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "sqs:ReceiveMessage"
+                  - "sqs:DeleteMessage"
+                  - "sqs:DeleteMessageBatch"
+                  - "sqs:GetQueueUrl"
+                Resource: !GetAtt Queue.Arn
+        - PolicyName: "allow_get_bucket_metadata"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:Get*"
+                  - "s3:ListBucket"
+                Resource: !GetAtt Bucket.Arn
+        - PolicyName: "allow_write_to_bucket"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:Put*"
+                  - "s3:Get*"
+                  - "s3:Delete*"
+                Resource: !Sub
+                  - "${bucket}/*"
+                  - { bucket: !GetAtt Bucket.Arn }
+  VirtualMachineSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allows ssh access"
+      VpcId: "vpc-6add1d01"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref MyIp
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+  Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: "Private"
+      BucketName: !Ref BucketName
+  PublisherFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref PublisherFunctionS3Key
+      Environment:
+        Variables:
+          WIKI_DATA_URL: "https://dumps.wikimedia.org/other/pagecounts-raw/2014/2014-01/pagecounts-20140101-000000.gz"
+          QUEUE_NAME: !Ref QueueName
+          BUFFER_SIZE: "128000"
+      FunctionName: !Sub "${AWS::StackName}-publisher"
+      Handler: !Ref PublisherFunctionHandler
+      MemorySize: 2560
+      Role: !GetAtt PublisherFunctionRole.Arn
+      Runtime: !Ref PublisherFunctionRuntime
+      Timeout: 150
+  PublisherFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-publisher-function-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: "allow_send_messages"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "sqs:SendMessage"
+                  - "sqs:GetQueueUrl"
+                Resource: !GetAtt Queue.Arn
+        - PolicyName: "allow_write_logs"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: "*"
+Outputs:
+  QueueName:
+    Value: !Ref QueueName
+  PublisherFunctionName:
+    Value: !Ref PublisherFunction
+  SubscriberIp:
+    Value: !GetAtt VirtualMachine.PublicDnsName
+  BucketName:
+    Value: !Ref BucketName
+  Region:
+    Value: !Sub "${AWS::Region}"
+  SecurityGroup:
+    Value: !GetAtt VirtualMachineSecurityGroup.GroupId

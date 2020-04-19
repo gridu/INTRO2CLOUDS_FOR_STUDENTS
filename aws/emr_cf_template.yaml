@@ -1,0 +1,174 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "GridU Clouds Intro course"
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: "m4.large"
+  CodeBucket:
+    Type: String
+  DataBucket:
+    Type: String
+  SshKey:
+    Type: String
+    Description: "Name of existing KeyPair for ssh access to ec2 instances"
+  MyIp:
+    Type: String
+    Description: "Subnet mask to allow ssh access to EC2 instance"
+    Default: "89.22.4.3/29"
+
+Resources:
+  EmrCluster:
+    Type: AWS::EMR::Cluster
+    Properties:
+      Applications:
+        -
+          Name: "Spark"
+      Instances:
+        MasterInstanceGroup:
+          Market: 'ON_DEMAND'
+          InstanceType: !Ref InstanceType
+          InstanceCount: 1
+        CoreInstanceGroup:
+          Market: 'SPOT'
+          InstanceType: !Ref InstanceType
+          InstanceCount: 2
+        Ec2KeyName: !Ref SshKey
+        Ec2SubnetId: "subnet-5bc54c17"
+        EmrManagedMasterSecurityGroup: !GetAtt EmrSecurityGroup.GroupId
+        EmrManagedSlaveSecurityGroup: !GetAtt EmrSecurityGroup.GroupId
+        KeepJobFlowAliveWhenNoSteps: false
+      ReleaseLabel: "emr-5.29.0"
+      JobFlowRole: !Ref EmrEc2InstanceProfile
+      ServiceRole: "EMR_DefaultRole"
+      Name: !Sub "${AWS::StackName}-cluster"
+# ---Example steps---
+#      Steps:
+#        -
+#          Name: "download_spark_application_jar"
+#          ActionOnFailure: "CANCEL_AND_WAIT"
+#          HadoopJarStep:
+#            Jar: !Sub "s3://${AWS::Region}.elasticmapreduce/libs/script-runner/script-runner.jar"
+#            Args:
+#              - "file:///usr/bin/aws"
+#              - "s3"
+#              - "cp"
+#              - !Sub "s3://${CodeBucket}/clouds/intro/${SparkApplicationJar}"
+#              - "/home/hadoop/"
+#        -
+#          ActionOnFailure: "CANCEL_AND_WAIT"
+#          Name: "run_spark_job"
+#          HadoopJarStep:
+#            Jar: "command-runner.jar"
+#            Args:
+#              - "spark-submit"
+#              - !Sub "/home/hadoop/${SparkApplicationJar}"
+#              - "--arguments-file-path"
+#              - !Sub "${SparkApplicationArgsFile}"
+      VisibleToAllUsers: "false"
+      LogUri: !Sub "s3://aws-logs-${AWS::AccountId}-${AWS::Region}/elasticmapreduce/"
+  EmrRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-emr-instance-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: "allow_get_bucket_metadata"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:Get*"
+                  - "s3:ListBucket"
+                Resource: !Sub "arn:aws:s3:::${DataBucket}"
+        - PolicyName: "allow_write_to_bucket"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:Put*"
+                  - "s3:Get*"
+                  - "s3:Delete*"
+                Resource: !Sub "arn:aws:s3:::${DataBucket}/*"
+        - PolicyName: "allow_get_log_bucket_metadata"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:Get*"
+                  - "s3:ListBucket"
+                Resource: !Sub "arn:aws:s3:::aws-logs-${AWS::AccountId}-${AWS::Region}"
+        - PolicyName: "allow_write_logs"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:Put*"
+                  - "s3:Get*"
+                  - "s3:Delete*"
+                Resource: !Sub "arn:aws:s3:::aws-logs-${AWS::AccountId}-${AWS::Region}/elasticmapreduce/*"
+        - PolicyName: "allow_read_code_bucket_metadata"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:Get*"
+                  - "s3:ListBucket*"
+                Resource: !Sub "arn:aws:s3:::${CodeBucket}"
+        - PolicyName: "allow_read_code_bucket"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:Get*"
+                Resource: !Sub "arn:aws:s3:::${CodeBucket}/*"
+        - PolicyName: "allow_read_script_runner"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:Get*"
+                Resource: !Sub "arn:aws:s3:::${AWS::Region}.elasticmapreduce/libs/script-runner/*"
+  EmrEc2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${AWS::StackName}-emr-ec2-instance-profile"
+      Roles:
+        - !Ref EmrRole
+  EmrSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allows ssh access"
+      VpcId: "vpc-6add1d01"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref MyIp
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+
+Outputs:
+  EmrClusterId:
+    Value: !Ref EmrCluster
+  LastEmrStepName:
+    Value: "run_spark_job"

@@ -1,0 +1,107 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "GridU Clouds Intro course"
+
+Parameters:
+  DataBucket:
+    Type: String
+  DataKeyPrefix:
+    Type: String
+    Description: "Path within CodeBucket to be explored by crawler"
+  GlueDatabaseName:
+    Type: String
+  CrawlerName:
+    Type: String
+
+Resources:
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Ref GlueDatabaseName
+  Crawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Ref CrawlerName
+      DatabaseName: !Ref GlueDatabase
+      Role: !GetAtt CrawlerRole.Arn
+      TablePrefix: !Sub "${CrawlerName}_"
+      Targets:
+        S3Targets:
+          -
+            Path: !Sub "s3://${DataBucket}/${DataKeyPrefix}"
+
+  CrawlerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-crawler-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - glue.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: "allow_get_bucket_metadata"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:Get*"
+                  - "s3:ListBucket"
+                Resource: !Sub "arn:aws:s3:::${DataBucket}"
+        - PolicyName: "allow_write_to_bucket"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:Get*"
+                Resource: !Sub "arn:aws:s3:::${DataBucket}/${DataKeyPrefix}/*"
+        - PolicyName: "allow_write_logs"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "logs:PutLogEvents"
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                Resource: !Sub "arn:aws:logs:us-east-2:571632058847:log-group:/aws-glue/*"
+        - PolicyName: "allow_ddl_on_db"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "glue:*"
+                Resource:
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${GlueDatabaseName}/*"
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${GlueDatabaseName}"
+        - PolicyName: "allow_ddl_on_catalog"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "glue:GetDatabase"
+                  - "glue:GetTable"
+                  - "glue:CreateTable"
+                  - "glue:BatchGetPartition"
+                  - "glue:BatchCreatePartition"
+                Resource:
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+        - PolicyName: "full_tables_access"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "glue:*"
+                Resource:
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${GlueDatabaseName}/*"
